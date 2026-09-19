@@ -40,7 +40,7 @@ public final class LabeledStateWriter implements Closeable, Flushable {
     private long nNnz  = 0; // total entries in /indices
 
     public LabeledStateWriter(String path) throws IOException {
-        this(path, /*actionDim*/128, /*rowsChunk*/2048, /*idxChunk*/1_000_000);
+        this(path, /*actionDim*/mage.player.ai.encoder.ActionEncoder.ACTION_DIM, /*rowsChunk*/2048, /*idxChunk*/1_000_000);
     }
 
     public LabeledStateWriter(String path, int actionDim, int rowsChunk, int idxChunk) throws IOException {

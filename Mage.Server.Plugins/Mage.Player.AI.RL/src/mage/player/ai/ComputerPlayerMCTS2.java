@@ -263,7 +263,7 @@ public class ComputerPlayerMCTS2 extends ComputerPlayerMCTS {
         }
     }
     int[] getActionVec(MCTSNode node, Game game) {
-        int[] out = new int[128];
+        int[] out = new int[ActionEncoder.ACTION_DIM];
         Arrays.fill(out, 0);
         for (MCTSNode child : node.getChildren()) {
             int idx = child.getActionIndex(game);
@@ -271,7 +271,7 @@ public class ComputerPlayerMCTS2 extends ComputerPlayerMCTS {
                 return null;
             }
             int v = child.getVisits();//un normalized counts
-            out[idx%128] += v;
+            out[idx % ActionEncoder.ACTION_DIM] += v;
         }
         return out;
     }

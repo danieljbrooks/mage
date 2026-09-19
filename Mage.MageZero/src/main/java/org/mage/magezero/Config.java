@@ -53,6 +53,12 @@ public class Config {
 
     public static class PlayerConfig {
         public String deckPath;
+        /** Optional text file listing .dck paths, one per line. When set, every game draws a
+         *  random deck from it (reproducible from the game seed) instead of using deckPath. */
+        public String deckPool;
+        /** "random" (default): each game draws uniformly from the pool. "sequential": game i uses
+         *  line i of the pool file, so two runs with swapped pools replay the same deck pairs. */
+        public String deckPoolMode;
         public String type;
         public String outputFile;
         public final PriorsConfig priors;
@@ -64,6 +70,8 @@ public class Config {
         @SuppressWarnings("unchecked")
         public PlayerConfig(Map<String, Object> raw) {
             this.deckPath = (String) raw.get("deckPath");
+            this.deckPool = (String) raw.getOrDefault("deck_pool", "");
+            this.deckPoolMode = (String) raw.getOrDefault("deck_pool_mode", "random");
             this.type = (String) raw.getOrDefault("type", "mcts");
             this.outputFile = (String) raw.getOrDefault("output_file", "");
             this.priors = new PriorsConfig((Map<String, Object>) raw.getOrDefault("priors", Collections.emptyMap()));
