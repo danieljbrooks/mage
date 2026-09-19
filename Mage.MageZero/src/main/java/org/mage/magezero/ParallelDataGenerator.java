@@ -56,7 +56,9 @@ public class ParallelDataGenerator {
     private final BlockingQueue<GameResult> LSQueue = new ArrayBlockingQueue<>(32);
     private final AtomicBoolean stop = new AtomicBoolean(false);
 
-    protected static Map<String, DeckCardLists> loadedDecks = new HashMap<>(); // deck's cache
+    protected static Map<String, DeckCardLists> loadedDecks = new java.util.concurrent.ConcurrentHashMap<>(); // deck's cache, shared by game threads
+    protected static final Map<String, List<String>> deckPools = new java.util.concurrent.ConcurrentHashMap<>();
+    protected final AtomicInteger gamesStarted = new AtomicInteger(0);
     protected static Map<String, CardInfo> loadedCardInfo = new HashMap<>(); // db card's cache
     private int maxGameTime = 20;
 
@@ -149,8 +151,8 @@ public class ParallelDataGenerator {
         LabeledStateWriter fwB;
         Thread writer;
 
-        String deckNameA = extractDeckName(Config.INSTANCE.playerA.deckPath);
-        String deckNameB = extractDeckName(Config.INSTANCE.playerB.deckPath);
+        String deckNameA = extractDeckName(poolOrDeck(Config.INSTANCE.playerA));
+        String deckNameB = extractDeckName(poolOrDeck(Config.INSTANCE.playerB));
 
         String fileA = "data/playerA/" + deckNameA + "_vs_" + deckNameB + ".hdf5";
         String fileB = "data/playerB/" + deckNameB + "_vs_" + deckNameA + ".hdf5";
@@ -310,8 +312,13 @@ public class ParallelDataGenerator {
             MatchOptions matchOptions = new MatchOptions("test match", "test game type", false);
             Match localMatch = new TwoPlayerMatch(matchOptions);
             game = new TwoPlayerDuel(MultiplayerAttackOption.LEFT, RangeOfInfluence.ONE, MulliganType.GAME_DEFAULT.getMulligan(0), 60, 20, 7);
-            Player playerA = createLocalPlayer(game, "PlayerA", Config.INSTANCE.playerA.deckPath, localMatch);
-            Player playerB = createLocalPlayer(game, "PlayerB", Config.INSTANCE.playerB.deckPath, localMatch);
+            java.util.Random deckRng = new java.util.Random(gameSeed ^ 0x5DEECE66DL);
+            int gameIndex = gamesStarted.getAndIncrement();
+            String deckPathA = chooseDeck(Config.INSTANCE.playerA, deckRng, gameIndex);
+            String deckPathB = chooseDeck(Config.INSTANCE.playerB, deckRng, gameIndex);
+            Player playerA = createLocalPlayer(game, "PlayerA", deckPathA, localMatch);
+            Player playerB = createLocalPlayer(game, "PlayerB", deckPathB, localMatch);
+            game.getState().addWatcher(new CardsDrawnWatcher());
 
 
             configurePlayer(playerA, threadEncoderA, threadEncoderB);
@@ -359,7 +366,9 @@ public class ParallelDataGenerator {
                 seenFeatures.merge(threadEncoderA.featureMap);
             }
             if(playerA.hasWon()) winCount.incrementAndGet();
-            logger.info("Game #" + gameCount.incrementAndGet() + " completed successfully");
+            int gameNumber = gameCount.incrementAndGet();
+            logger.info("Game #" + gameNumber + " completed successfully");
+            logGameSummary(game, gameNumber, gameSeed, playerA, playerB, deckPathA, deckPathB);
             logger.info("Current WR: " + winCount.get()*1.0/gameCount.get());
             List<LabeledState> statesA = generateLabeledStatesForGame(threadEncoderA, playerAWon, Config.INSTANCE.playerA.mcts.tdDiscount);
             List<LabeledState> statesB = generateLabeledStatesForGame(threadEncoderB, !playerAWon, Config.INSTANCE.playerB.mcts.tdDiscount);
@@ -436,6 +445,51 @@ public class ParallelDataGenerator {
         return encoder.labeledStates;
 
     }
+    protected static String poolOrDeck(Config.PlayerConfig player) {
+        return (player.deckPool != null && !player.deckPool.isEmpty()) ? player.deckPool : player.deckPath;
+    }
+
+    /** The deck for one player in one game: a random pick from its deck pool, or its fixed deck. */
+    protected static String chooseDeck(Config.PlayerConfig player, java.util.Random rng, int gameIndex) throws java.io.IOException {
+        if (player.deckPool == null || player.deckPool.isEmpty()) {
+            return player.deckPath;
+        }
+        List<String> pool = deckPools.computeIfAbsent(player.deckPool, path -> {
+            try {
+                List<String> decks = new java.util.ArrayList<>();
+                for (String line : java.nio.file.Files.readAllLines(java.nio.file.Paths.get(path))) {
+                    if (!line.trim().isEmpty() && !line.startsWith("#")) decks.add(line.trim());
+                }
+                logger.info("Deck pool " + path + ": " + decks.size() + " decks");
+                return decks;
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+        });
+        if (pool.isEmpty()) throw new IllegalArgumentException("empty deck pool: " + player.deckPool);
+        if ("sequential".equals(player.deckPoolMode)) {
+            return pool.get(gameIndex % pool.size());
+        }
+        return pool.get(rng.nextInt(pool.size()));
+    }
+
+    /** One machine-readable line per finished game, for per-deck and per-card (GIH) statistics. */
+    protected void logGameSummary(Game game, int gameNumber, long seed, Player playerA, Player playerB,
+                                  String deckPathA, String deckPathB) {
+        CardsDrawnWatcher drawn = game.getState().getWatcher(CardsDrawnWatcher.class);
+        Map<String, Object> summary = new java.util.LinkedHashMap<>();
+        summary.put("game", gameNumber);
+        summary.put("seed", seed);
+        summary.put("deck_a", extractDeckName(deckPathA));
+        summary.put("deck_b", extractDeckName(deckPathB));
+        summary.put("first", game.getStartingPlayerId().equals(playerA.getId()) ? "A" : "B");
+        summary.put("winner", playerA.hasWon() ? "A" : playerB.hasWon() ? "B" : "draw");
+        summary.put("turns", game.getTurnNum());
+        summary.put("drawn_a", drawn == null ? null : drawn.getDrawn(playerA.getId()));
+        summary.put("drawn_b", drawn == null ? null : drawn.getDrawn(playerB.getId()));
+        logger.info("GAME_SUMMARY " + new com.google.gson.Gson().toJson(summary));
+    }
+
     public static String extractDeckName(String deckPath) {
         // Handle both forward and backslashes
         int lastSlash = Math.max(deckPath.lastIndexOf('\\'), deckPath.lastIndexOf('/'));
